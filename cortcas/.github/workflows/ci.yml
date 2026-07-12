@@ -1,0 +1,114 @@
+name: CORTCAS CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Code Quality and Testing
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: cortcas_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password123
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpq-dev build-essential
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff black email-validator httpx pytest-benchmark
+          pip install -r requirements.txt
+
+      - name: Code Linting & Style Check
+        run: |
+          # Verify formatting and imports using Ruff
+          ruff check .
+          black --check .
+
+      - name: Run Database Migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:password123@localhost:5432/cortcas_test
+          SYNC_DATABASE_URL: postgresql://postgres:password123@localhost:5432/cortcas_test
+        run: |
+          alembic upgrade head
+
+      - name: Seed Synthetic Student Data
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:password123@localhost:5432/cortcas_test
+          SYNC_DATABASE_URL: postgresql://postgres:password123@localhost:5432/cortcas_test
+        run: |
+          python scripts/generate_data.py
+
+      - name: Run ML Training Pipeline
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:password123@localhost:5432/cortcas_test
+          SYNC_DATABASE_URL: postgresql://postgres:password123@localhost:5432/cortcas_test
+        run: |
+          python app/ml/train.py
+
+      - name: Execute Pytest Suite (Repositories, ML, API)
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:password123@localhost:5432/cortcas_test
+          SYNC_DATABASE_URL: postgresql://postgres:password123@localhost:5432/cortcas_test
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          python -m pytest -v
+
+  build-image:
+    name: Build Docker Container
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: actions/setup-buildx-action@v3
+
+      - name: Mock Model Files for Docker Build Build-Check
+        run: |
+          # The Dockerfile copies the models/ directory. 
+          # In local builds, the models are pre-trained. We stub them here to allow image build-test to pass.
+          mkdir -p models
+          touch models/logistic_regression.pkl
+          touch models/kmeans.pkl
+          touch models/isolation_forest.pkl
+
+      - name: Build Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: false # Set to true and supply credentials for publishing to GHCR/DockerHub
+          tags: cortcas-api:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
