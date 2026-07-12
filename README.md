@@ -67,7 +67,7 @@ flowchart TD
 * **Machine Learning**: scikit-learn (Logistic Regression, KMeans, Isolation Forest)
 * **Task Automation & Run**: Docker & Docker Compose
 * **CI/CD Pipeline**: GitHub Actions
-
+  
 ---
 
 ## Configuration Variables
